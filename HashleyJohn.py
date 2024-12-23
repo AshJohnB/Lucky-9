@@ -183,7 +183,10 @@ class BalanceManager:
     """
     Tracks each player's money using a JSON file and a MyHashMap.
     Each player's name is the key; the value is a dict with:
-      { "initial_balance": int, "current_balance": int }
+      {
+        "initial_balance": int,
+        "current_balance": int
+      }
     """
     def __init__(self):
         self.file_path = "balances.json"
@@ -205,12 +208,9 @@ class BalanceManager:
                 print("Balances file is corrupted or not in expected format. Starting fresh.")
                 return
             for player_name, balances in data.items():
-                # Validate that balances has required keys
-                if (
-                    isinstance(balances, dict)
+                if (isinstance(balances, dict)
                     and "initial_balance" in balances
-                    and "current_balance" in balances
-                ):
+                    and "current_balance" in balances):
                     self.data_map.set(player_name, balances)
                 else:
                     print(f"Skipping invalid balance entry for player {player_name}")
@@ -245,33 +245,36 @@ class BalanceManager:
 
     def view_balance(self, player_name):
         """
-        Print out the initial and current balance for the given player.
+        Print out the initial, current balance, and also the profit.
         """
         balance_data = self.create_or_get_balance(player_name)
+        profit = balance_data['current_balance'] - balance_data['initial_balance']
         print("============================================")
         print(f"Balance info for {player_name}:")
         print(f"  Initial Balance: {balance_data['initial_balance']}")
         print(f"  Current Balance: {balance_data['current_balance']}")
+        print(f"  Profit: {profit}")
         print("============================================")
 
-    def handle_win(self, player_name):
+    # MODIFIED to accept a bet parameter (default remains to avoid breaking existing calls)
+    def handle_win(self, player_name, bet=20):
         """
-        Add winnings to the player's current balance.
+        Add 'bet' to the player's current balance.
         """
         balance_data = self.create_or_get_balance(player_name)
-        balance_data["current_balance"] += 20  # Example win amount
+        balance_data["current_balance"] += bet  # Player wins 'bet' amount
         self.data_map.set(player_name, balance_data)
         self.save_balances()
 
-    def handle_loss(self, player_name):
+    # MODIFIED to accept a bet parameter (default remains to avoid breaking existing calls)
+    def handle_loss(self, player_name, bet=10):
         """
-        Deduct money from the player's current balance. If the balance
-        goes 0 or below, replenish a fraction of the initial balance.
+        Deduct 'bet' from the player's current balance. If balance <= 0,
+        replenish half of the initial balance.
         """
         balance_data = self.create_or_get_balance(player_name)
-        balance_data["current_balance"] -= 10  # Example loss deduction
+        balance_data["current_balance"] -= bet  # Player loses 'bet' amount
         if balance_data["current_balance"] <= 0:
-            # Replenish fraction of the initial balance
             fraction = 0.5
             balance_data["current_balance"] = int(balance_data["initial_balance"] * fraction)
         self.data_map.set(player_name, balance_data)
@@ -283,8 +286,7 @@ def initialize_card_count():
     return {value: 4 for value in range(1, 11)}
 
 def calculate_hand_total(hand):
-    total = sum(card for card in hand) % 10
-    return total
+    return sum(card for card in hand) % 10
 
 def calculate_probabilities(current_total, remaining_cards):
     lucky_9_count = 0
@@ -305,20 +307,54 @@ def get_valid_input(prompt, valid_choices):
             return user_input
         print(f"Invalid input. Please enter one of {valid_choices}.")
 
+
+# NEW HELPER: Safely ask for a bet from the player
+def get_valid_bet(balance_manager, player_name):
+    """
+    Prompt the player to enter a bet between 1 and their current balance.
+    Includes robust error handling for non-integer inputs and out-of-range bets.
+    """
+    while True:
+        balance_data = balance_manager.create_or_get_balance(player_name)
+        current_balance = balance_data["current_balance"]
+
+        # If current_balance is 0, break to let the auto-replenish happen or handle differently
+        if current_balance <= 0:
+            print(f"{player_name}, your balance is 0. Cannot place a bet.")
+            return 0
+
+        bet_input = input(f"Enter your bet amount (1 - {current_balance}): ").strip()
+        if not bet_input.isdigit():
+            print("Invalid input. Please enter a valid number.")
+            continue
+        bet = int(bet_input)
+        if bet < 1 or bet > current_balance:
+            print(f"Invalid bet amount. Must be between 1 and {current_balance}.")
+            continue
+        return bet
+
+
 # main game logic (playing as "{player_name}")
 def play_lucky9(cards, card_count, leaderboard, player_name, achievements, balance_manager):
+    # Prompt player for a bet upfront
+    bet_amount = get_valid_bet(balance_manager, player_name)
+    # If bet_amount is 0 (e.g. no funds), skip the game automatically
+    if bet_amount == 0:
+        print(f"{player_name} has insufficient funds or bet was invalid. Round skipped.")
+        return LinkedList(), cards, card_count
+
     player_hand = []
     banker_hand = []
     action_history = LinkedList()  # action history
 
-    # simple fix when the deck runs out:
+    # If deck is too small, re-initialize
     if len(cards) < 6:
         print("Not enough cards to continue the game. Re-initializing deck.")
         cards = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * 4
         random.shuffle(cards)
         card_count = initialize_card_count()
 
-    # initial card dealing
+    # Deal initial cards
     for _ in range(2):
         player_card = cards.pop()
         banker_card = cards.pop()
@@ -338,7 +374,7 @@ def play_lucky9(cards, card_count, leaderboard, player_name, achievements, balan
     print(f"Banker's hand: {banker_hand} | Total: {banker_total}")
     print("============================================")
 
-    # player's turn
+    # Player's turn
     if len(player_hand) < 3:
         while True:
             remaining_cards = [card for card, count in card_count.items() for _ in range(count)]
@@ -358,7 +394,7 @@ def play_lucky9(cards, card_count, leaderboard, player_name, achievements, balan
                 action_history.append(f"Player hits and draws: {player_card} | New total: {player_total}")
                 print(f"You drew a card with value: {player_card}")
                 print(f"Your cards: {player_hand} | Total: {player_total}")
-                # If player hits Lucky 9, record an achievement
+                # Achievement for Lucky 9
                 if player_total == 9:
                     action_history.append("Player hits Lucky 9 and wins!")
                     achievements.add_achievement(player_name, "Lucky Nine Master", "You achieved a perfect 9!")
@@ -371,7 +407,7 @@ def play_lucky9(cards, card_count, leaderboard, player_name, achievements, balan
                 print("Remaining cards in the deck:")
                 print(card_count)
 
-    # banker's turn
+    # Banker's turn logic
     if len(banker_hand) < 3 and (banker_total < 3 or (banker_total < 6 and player_total > banker_total)):
         banker_card = cards.pop()
         banker_hand.append(banker_card)
@@ -384,24 +420,24 @@ def play_lucky9(cards, card_count, leaderboard, player_name, achievements, balan
     print(f"Final Banker's hand: {banker_hand} | Total: {banker_total}")
     print("============================================")
 
-    # determine winner
+    # Determine winner
     if player_total > banker_total:
         print("Player wins!")
         action_history.append("Player wins!")
         leaderboard.add_game_result(player_name, "win")
-        # Update balance for a win
-        balance_manager.handle_win(player_name)
+        # Use the new bet-aware method
+        balance_manager.handle_win(player_name, bet=bet_amount)
     elif player_total < banker_total:
         print("Banker wins!")
         action_history.append("Banker wins!")
         leaderboard.add_game_result(player_name, "loss")
-        # Update balance for a loss
-        balance_manager.handle_loss(player_name)
+        # Use the new bet-aware method
+        balance_manager.handle_loss(player_name, bet=bet_amount)
     else:
         print("It's a tie!")
         action_history.append("It's a tie!")
         leaderboard.add_game_result(player_name, "tie")
-        # In a tie, do nothing to the balance (or implement your own logic if desired)
+        # Ties do not affect the player's balance
 
     return action_history, cards, card_count
 
@@ -417,27 +453,33 @@ def main():
     # Instantiate our new BalanceManager
     balance_manager = BalanceManager()
 
-    print("============================================")
-    print("         WELCOME TO LUCKY 9 GAME")
-    print("============================================")
+    # Prompt for player name initially
     player_name = input("Enter your name: ").strip()
 
-    action = ""
     while True:
-        print("\n============================================")
-        print(f"                MAIN MENU (Playing as \"{player_name}\")")
-        print("============================================")
+        # Dynamically fetch current balance to show in header each loop
+        balance_info = balance_manager.create_or_get_balance(player_name)
+        current_balance = balance_info["current_balance"]
+
+        # Make the header bigger to fit player's name and current balance
+        print("\n==============================================================")
+        print(f"      WELCOME TO LUCKY 9 GAME (Playing as \"{player_name}\")")
+        print(f"                   Current Balance: {current_balance}")
+        print("==============================================================")
+
+        # Display the main menu
         print("1. Play Game")
         print("2. View Leaderboard")
         print("3. Change Player Name")
         print("4. Exit")
         print("5. View Achievements")
-        print("6. View Balance")  # NEW MENU OPTION
-        print("============================================")
+        print("6. View Balance")
+        print("==============================================================")
+
         action = get_valid_input("Choose an option: ", ["1", "2", "3", "4", "5", "6"])
 
         if action == "1":
-            # start a new game
+            # Start a new game
             action_history, cards, card_count = play_lucky9(
                 cards, card_count, leaderboard, player_name, achievements, balance_manager
             )
@@ -450,18 +492,18 @@ def main():
                     print(hist_action)
 
         elif action == "2":
-            # display the leaderboard
+            # Display the leaderboard
             print("\n============================================")
             print(f"          CURRENT LEADERBOARD (Playing as \"{player_name}\")")
             print("============================================")
             leaderboard.display()
 
         elif action == "3":
-            # change the player name
+            # Change the player name
             player_name = input("Enter a new player name: ").strip()
 
         elif action == "4":
-            # exit the game
+            # Exit the game
             print("============================================")
             print("    THANKS FOR PLAYING! GOODBYE!")
             print("============================================")
@@ -476,7 +518,7 @@ def main():
             print("============================================")
 
         elif action == "6":
-            # NEW: View Balance
+            # NEW: View Balance (includes profits)
             balance_manager.view_balance(player_name)
 
 
